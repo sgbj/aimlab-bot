@@ -1,25 +1,9 @@
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 var isOn = false;
 
-var fireCooldown = TimeSpan.FromSeconds(.5);
-var fireStopwatch = new Stopwatch();
-
 HotKeyManager.RegisterHotKey(Keys.PageUp, KeyModifiers.Control);
-HotKeyManager.HotKeyPressed += new EventHandler<HotKeyEventArgs>((sender, e) =>
-{
-    isOn = !isOn;
-
-    if (isOn)
-    {
-        fireStopwatch.Start();
-    }
-    else
-    {
-        fireStopwatch.Stop();
-    }
-});
+HotKeyManager.HotKeyPressed += (_, _) => isOn = !isOn;
 
 var screenWidth = 1920;
 var screenHeight = 1080;
@@ -51,36 +35,37 @@ while (true)
 
     boundingRectangles.Clear();
 
-    for (var x = 0; x < bitmapWidth; x += 15)
+    for (var x = 0; x < bitmapWidth; x += 10)
     {
-        for (var y = 0; y < bitmapHeight; y += 15)
+        for (var y = 0; y < bitmapHeight; y += 10)
         {
             var color = bmp.GetPixel(x, y);
             var hue = color.GetHue();
             var saturation = color.GetSaturation();
-
             var brightness = color.GetBrightness();
-            if ((hue >= 340 || hue <= 20) && brightness <= .8 && brightness >= .2 && saturation >= .01)
+
+            if (hue is <= 20 or >= 340 && brightness is >= .3f and <= .7f && saturation >= .5)
             {
-                var boundingRectangle = boundingRectangles.FirstOrDefault(r => GetDistance(r, x, y) <= boundingRectangleDistanceThreshold);
+                var index = boundingRectangles.FindIndex(r => r.GetDistance(x, y) <= boundingRectangleDistanceThreshold);
 
-                if (boundingRectangle == null)
+                if (index == -1)
                 {
-                    boundingRectangle = new Rect(x, y, 1, 1);
-                    boundingRectangles.Add(boundingRectangle);
+                    boundingRectangles.Add(new Rect(x, y, 1, 1));
                 }
-                else if (!boundingRectangle.Contains(x, y))
+                else
                 {
-                    // increase size of bounding rectangle
-                    var br = boundingRectangle;
+                    var br = boundingRectangles[index];
 
-                    // Update the top-left corner.
-                    if (x < br.X) br.X = x;
-                    if (y < br.Y) br.Y = y;
+                    if (!br.Contains(x, y))
+                    {
+                        // Increase size of bounding rectangle
+                        if (x < br.X) br.X = x;
+                        if (y < br.Y) br.Y = y;
+                        if (x > br.X + br.Width) br.Width = x - br.X;
+                        if (y > br.Y + br.Height) br.Height = y - br.Y;
+                    }
 
-                    // Update the bottom-right corner.
-                    if (x > br.X + br.Width) br.Width = x - br.X;
-                    if (y > br.Y + br.Height) br.Height = y - br.Y;
+                    boundingRectangles[index] = br;
                 }
             }
         }
@@ -88,55 +73,40 @@ while (true)
 
     var goodBoundingRectangles = boundingRectangles.Where(r => r.Area >= boundingRectangleAreaThreshold).ToList();
 
-    var nearest = goodBoundingRectangles.OrderBy(r => GetDistance(r, centerX, centerY)).FirstOrDefault();
+    var nearest = goodBoundingRectangles.OrderBy(r => r.GetDistance(centerX, centerY)).FirstOrDefault();
 
-    if (isOn && nearest != null)
+    if (isOn && nearest != default)
     {
-        var cx = nearest.X + nearest.Width / 2;
-        var cy = nearest.Y + nearest.Height / 2;
+        // Approximate world to screen coordinates
+        var dx = nearest.X + nearest.Width / 2 - centerX;
+        var dy = nearest.Y + nearest.Height / 2 - centerY;
 
-        var modifier = 5 * .09;
+        HotKeyManager.mouse_event(HotKeyManager.MOUSEEVENTF_MOVE, dx, dy, 0, 0);
 
-        var dx = (cx - centerX) / modifier;
-        var dy = (cy - centerY) / modifier;
+        if (Math.Sqrt(dx * dx + dy * dy) < 100)
+        {
+            HotKeyManager.mouse_event(HotKeyManager.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+            HotKeyManager.mouse_event(HotKeyManager.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+        }
 
-        HotKeyManager.mouse_event(HotKeyManager.MOUSEEVENTF_MOVE, (int)dx, (int)dy, 0, 0);
-        HotKeyManager.mouse_event(HotKeyManager.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
-        HotKeyManager.mouse_event(HotKeyManager.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
-    }
-}
-
-static double GetDistance(Rect rectangle, int x, int y)
-{
-    var dx = Math.Max(Math.Max(rectangle.X - x, 0), x - (rectangle.X + rectangle.Width));
-    var dy = Math.Max(Math.Max(rectangle.Y - y, 0), y - (rectangle.Y + rectangle.Height));
-    return Math.Sqrt(dx * dx + dy * dy);
-}
-
-class Rect
-{
-
-    public Rect(int x, int y, int width, int height)
-    {
-        X = x;
-        Y = y;
-        Width = width;
-        Height = height;
+        await Task.Delay(25);
     }
 
-    public int X { get; set; }
-    public int Y { get; set; }
-    public int Width { get; set; }
-    public int Height { get; set; }
+    await Task.Yield();
+}
+
+record struct Rect(int X, int Y, int Width, int Height)
+{
     public int Area => Width * Height;
 
-    public bool Contains(int x, int y)
-    {
-        return x > X && x < X + Width &&
-               y > Y && y < Y + Height;
-    }
+    public bool Contains(int x, int y) => x > X && x < X + Width && y > Y && y < Y + Height;
 
-    public override string ToString() => $"X={X}, Y={Y}, Width={Width}, Height={Height}";
+    public double GetDistance(int x, int y)
+    {
+        var dx = Math.Max(Math.Max(X - x, 0), x - (X + Width));
+        var dy = Math.Max(Math.Max(Y - y, 0), y - (Y + Height));
+        return Math.Sqrt(dx * dx + dy * dy);
+    }
 }
 
 static class HotKeyManager
@@ -194,13 +164,12 @@ static class HotKeyManager
     [DllImport("user32")]
     public static extern int SetCursorPos(int x, int y);
 
-    public const int MOUSEEVENTF_MOVE = 0x0001; /* mouse move */
-    public const int MOUSEEVENTF_LEFTDOWN = 0x0002; /* left button down */
-    public const int MOUSEEVENTF_LEFTUP = 0x0004; /* left button up */
-    public const int MOUSEEVENTF_RIGHTDOWN = 0x0008; /* right button down */
+    public const int MOUSEEVENTF_MOVE = 0x0001;
+    public const int MOUSEEVENTF_LEFTDOWN = 0x0002;
+    public const int MOUSEEVENTF_LEFTUP = 0x0004;
+    public const int MOUSEEVENTF_RIGHTDOWN = 0x0008;
 
-    [DllImport("user32.dll",
-        CharSet = CharSet.Auto, CallingConvention = CallingConvention.StdCall)]
+    [DllImport("user32.dll", CharSet = CharSet.Auto, CallingConvention = CallingConvention.StdCall)]
     public static extern void mouse_event(int dwFlags, int dx, int dy, int cButtons,
         int dwExtraInfo);
 
